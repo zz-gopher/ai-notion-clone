@@ -1,5 +1,5 @@
 <script setup>
-import { ref, nextTick } from 'vue'
+import { ref, nextTick, computed, watch } from 'vue'
 
 // ==========================================
 // 1. 核心状态数据
@@ -11,6 +11,26 @@ const pageTitle = ref('AI 智能笔记')
 const blocks = ref([
   { id: '1', type: 'p', content: '' }
 ])
+
+// 动态计算总字数：标题长度 + 所有积木块内容的长度
+const wordCount = computed(() => {
+  let count = pageTitle.value.length
+  blocks.value.forEach(block => {
+    count += block.content.length
+  })
+  return count
+})
+
+// 记录最后编辑时间
+const lastEditedTime = ref('刚刚')
+
+// 侦听器魔法：只要 pageTitle 或 blocks 发生任何微小的改变，就立刻更新时间
+watch([pageTitle, blocks], () => {
+  const now = new Date()
+  const hours = now.getHours().toString().padStart(2, '0')
+  const minutes = now.getMinutes().toString().padStart(2, '0')
+  lastEditedTime.value = `${hours}:${minutes}`
+}, { deep: true }) // deep: true 意思是深度监听数组里每一行的变化
 
 // 存放所有真实 input 元素的“花名册”
 const inputRefs = ref([])
@@ -140,7 +160,9 @@ const handleArrowKey = (direction, event) => {
         {{ item.label }}
       </div>
     </div>
-
+    <div class="status-bar" v-show="wordCount > 0">
+      最后编辑于 {{ lastEditedTime }} • {{ wordCount }} 字
+    </div>
   </div>
 </template>
 
@@ -314,5 +336,15 @@ const handleArrowKey = (direction, event) => {
 
 .menu-item.is-selected {
   background-color: #f1f1ef;
+}
+
+.status-bar {
+  position: fixed; /* 固定在浏览器视口 */
+  bottom: 24px;
+  right: 32px;
+  font-size: 13px;
+  color: #b3b3b1; /* 极其柔和的浅灰色 */
+  pointer-events: none; /* 鼠标穿透，防止挡住底部的字点不到 */
+  transition: opacity 0.3s ease;
 }
 </style>
