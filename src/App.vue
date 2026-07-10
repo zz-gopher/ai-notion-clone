@@ -88,17 +88,25 @@ const menuOptions = [
 const selectedMenuIndex = ref(0)
 
 const handleInput = (index, event) => {
+  // === 新增：自动撑开高度的魔法 ===
+  const textarea = event.target
+  // 先把高度重置为 auto，让它缩小回真实文字的高度
+  textarea.style.height = 'auto'
+  // 然后把高度设置为它内部“卷去”的真实高度 (scrollHeight)
+  textarea.style.height = textarea.scrollHeight + 'px'
+  // ====================================
+
+  // 下面是原有的菜单逻辑，保持不变
   const currentBlock = blocks.value[index]
   if (currentBlock.content.endsWith('/')) {
-    const rect = event.target.getBoundingClientRect()
+    const rect = textarea.getBoundingClientRect()
     menuPosition.value = {
-      // 稍微往右偏移一点，视觉上更靠近文字起点
       top: `${rect.bottom + window.scrollY + 5}px`,
       left: `${rect.left + window.scrollX + 20}px`
     }
     showMenu.value = true
     activeBlockIndex.value = index
-    selectedMenuIndex.value = 0 // 每次弹出来，默认选中第一项
+    selectedMenuIndex.value = 0
   } else {
     showMenu.value = false
   }
@@ -144,11 +152,11 @@ const handleArrowKey = (direction, event) => {
           <span class="drag-icon">⋮⋮</span>
         </div>
 
-        <input type="text" v-model="block.content" :class="['block-input', `block-${block.type}`]"
-          :placeholder="block.type === 'h1' ? '无标题' : '输入 \'/\' 唤出菜单...'" @keydown.enter.prevent="handleEnter(index)"
-          @keydown.delete="handleBackspace(index, $event)" @keydown.up="handleArrowKey('up', $event)"
-          @keydown.down="handleArrowKey('down', $event)" @input="handleInput(index, $event)"
-          :ref="(el) => inputRefs[index] = el">
+        <textarea v-model="block.content" :class="['block-input', `block-${block.type}`]"
+          :placeholder="block.type === 'h1' ? '无标题' : '输入 \'/\' 唤出菜单...'" rows="1"
+          @keydown.enter.prevent="handleEnter(index)" @keydown.delete="handleBackspace(index, $event)"
+          @keydown.up="handleArrowKey('up', $event)" @keydown.down="handleArrowKey('down', $event)"
+          @input="handleInput(index, $event)" :ref="(el) => inputRefs[index] = el"></textarea>
       </div>
     </TransitionGroup>
 
@@ -243,6 +251,9 @@ const handleArrowKey = (direction, event) => {
   background: transparent;
   padding: 4px 2px;
   width: 100%;
+  resize: none; /* 隐藏右下角的拖拽三角 */
+  overflow: hidden; /* 隐藏由于计算延迟可能闪现的滚动条 */
+  font-family: inherit; /* 强制继承我们设置的高级字体 */
 }
 
 .block-input::placeholder {
@@ -339,12 +350,15 @@ const handleArrowKey = (direction, event) => {
 }
 
 .status-bar {
-  position: fixed; /* 固定在浏览器视口 */
+  position: fixed;
+  /* 固定在浏览器视口 */
   bottom: 24px;
   right: 32px;
   font-size: 13px;
-  color: #b3b3b1; /* 极其柔和的浅灰色 */
-  pointer-events: none; /* 鼠标穿透，防止挡住底部的字点不到 */
+  color: #b3b3b1;
+  /* 极其柔和的浅灰色 */
+  pointer-events: none;
+  /* 鼠标穿透，防止挡住底部的字点不到 */
   transition: opacity 0.3s ease;
 }
 </style>
