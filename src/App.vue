@@ -73,6 +73,74 @@ const handleBackspace = async (index, event) => {
   }
 }
 
+const triggerAI = async (index) => {
+  // 1. 把触发菜单的那个 "/" 删掉
+  blocks.value[index].content = blocks.value[index].content.slice(0, -1)
+  
+  // 2. 拿到用户当前写的字，作为给 AI 的提示词
+  const prompt = blocks.value[index].content
+  
+  // 3. 在下方立刻新建一个空的文本块，用来装 AI 吐出来的字
+  const aiBlockId = Date.now().toString()
+  const aiBlock = { id: aiBlockId, type: 'p', content: '' }
+  blocks.value.splice(index + 1, 0, aiBlock)
+  
+  try {
+    // 4. 呼叫你的 Java 后端 (注意端口是 8080)
+    const response = await fetch('http://localhost:8080/api/ai/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: prompt })
+    })
+
+    // 5. 开启硬核的流式解析 (像接水管一样接住打字效果)
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder('utf-8')
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      const chunk = decoder.decode(value)
+      const lines = chunk.split('\n')
+      
+      for (const line of lines) {
+        // 💡 修复 1：只要以 'data:' 开头统统拦截，不管有没有空格
+        if (line.startsWith('data:')) {
+          // 💡 修复 2：安全截取掉前 5 个字符，然后用 trim() 洗掉多余的空格
+          const dataStr = line.substring(5).trim()
+          
+          if (dataStr === '[DONE]') continue
+          
+          try {
+            const data = JSON.parse(dataStr)
+            const textContent = data.choices[0].delta.content || ''
+            
+            const targetBlock = blocks.value.find(b => b.id === aiBlockId)
+            if (targetBlock) {
+              targetBlock.content += textContent
+              
+              // 让高度自适应（直接利用 Vue 响应式更新后的 DOM 重新计算）
+              nextTick(() => {
+                // 注意：Vue 编译后 DOM 里没有 v-model，所以我们换成通用选择器
+                const textareas = document.querySelectorAll('.block-input')
+                textareas.forEach(el => {
+                  el.style.height = 'auto'
+                  el.style.height = el.scrollHeight + 'px'
+                })
+              })
+            }
+          } catch (e) {
+             // 忽略 JSON 解析报错
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.error('AI 请求失败:', error)
+  }
+}
+
 // ==========================================
 // 3. 高级交互逻辑：斜杠 / 菜单
 // ==========================================
@@ -81,6 +149,7 @@ const menuPosition = ref({ top: '0px', left: '0px' })
 const activeBlockIndex = ref(null)
 
 const menuOptions = [
+  { type: 'ai', label: '✨ AI 帮我续写' },
   { type: 'h1', label: '一级标题 (H1)' },
   { type: 'h2', label: '二级标题 (H2)' },
   { type: 'p', label: '普通段落 (Text)' }
@@ -114,10 +183,15 @@ const handleInput = (index, event) => {
 
 const turnInto = (newType) => {
   if (activeBlockIndex.value !== null) {
-    const block = blocks.value[activeBlockIndex.value]
-    block.type = newType
-    block.content = block.content.slice(0, -1) // 删掉 /
-
+    if (newType === 'ai') {
+      // 触发 AI 逻辑
+      triggerAI(activeBlockIndex.value)
+    } else {
+      // 原本的格式转换逻辑
+      const block = blocks.value[activeBlockIndex.value]
+      block.type = newType
+      block.content = block.content.slice(0, -1) 
+    }
     showMenu.value = false
     activeBlockIndex.value = null
   }
