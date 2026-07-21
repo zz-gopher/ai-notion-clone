@@ -1,18 +1,19 @@
 <script setup>
 import { ref, nextTick, computed, watch } from 'vue'
+import { marked } from 'marked' // 💡 新增：引入 Markdown 解析库
 
 // ==========================================
 // 1. 核心状态数据
 // ==========================================
-// 独立的页面大标题
 const pageTitle = ref('AI 智能笔记')
 
-// 积木数组（初始化只有一行空的正文）
 const blocks = ref([
   { id: '1', type: 'p', content: '' }
 ])
 
-// 动态计算总字数：标题长度 + 所有积木块内容的长度
+// 💡 新增：记录当前正在编辑的积木块 ID
+const activeBlockId = ref(null) 
+
 const wordCount = computed(() => {
   let count = pageTitle.value.length
   blocks.value.forEach(block => {
@@ -21,79 +22,99 @@ const wordCount = computed(() => {
   return count
 })
 
-// 记录最后编辑时间
 const lastEditedTime = ref('刚刚')
 
-// 侦听器魔法：只要 pageTitle 或 blocks 发生任何微小的改变，就立刻更新时间
 watch([pageTitle, blocks], () => {
   const now = new Date()
   const hours = now.getHours().toString().padStart(2, '0')
   const minutes = now.getMinutes().toString().padStart(2, '0')
   lastEditedTime.value = `${hours}:${minutes}`
-}, { deep: true }) // deep: true 意思是深度监听数组里每一行的变化
+}, { deep: true })
 
-// 存放所有真实 input 元素的“花名册”
 const inputRefs = ref([])
+
+// ==========================================
+// 💡 新增：双态切换核心逻辑
+// ==========================================
+const renderMarkdown = (text, type) => {
+  if (!text) {
+    // 模拟占位符
+    const placeholderText = type === 'h1' ? '无标题' : '输入 \'/\' 唤出菜单...'
+    return `<span class="placeholder-text">${placeholderText}</span>`
+  }
+  // 渲染为 HTML
+  return marked.parse(text)
+}
+
+const focusBlock = (id, index) => {
+  activeBlockId.value = id
+  nextTick(() => {
+    const textarea = inputRefs.value[index]
+    if (textarea) {
+      textarea.focus()
+      // 恢复高度自适应
+      textarea.style.height = 'auto'
+      textarea.style.height = textarea.scrollHeight + 'px'
+    }
+  })
+}
 
 // ==========================================
 // 2. 基础交互逻辑：回车与退格
 // ==========================================
-// 处理敲击回车
 const handleEnter = async (index) => {
-  // === 新增：如果菜单显示着，回车就是确认选择 ===
   if (showMenu.value) {
     const selectedOption = menuOptions[selectedMenuIndex.value]
     turnInto(selectedOption.type)
-    return // 结束执行，不要再往下建新行了
+    return
   }
 
-  // 下面是原有的新增行逻辑
-  const newBlock = { id: Date.now().toString(), type: 'p', content: '' }
+  const newBlockId = Date.now().toString()
+  const newBlock = { id: newBlockId, type: 'p', content: '' }
   blocks.value.splice(index + 1, 0, newBlock)
+  
+  // 💡 关键：新建行必须立刻进入编辑态，否则光标无法聚焦
+  activeBlockId.value = newBlockId 
+
   await nextTick()
   if (inputRefs.value[index + 1]) {
     inputRefs.value[index + 1].focus()
   }
 }
 
-// 处理敲击退格键 (删除空块)
 const handleBackspace = async (index, event) => {
   const currentBlock = blocks.value[index]
-
-  // 判断条件：内容为空，且不是第一行
   if (currentBlock.content === '' && index > 0) {
-    event.preventDefault() // 阻止默认吃字行为
-    blocks.value.splice(index, 1) // 拔掉这一行
+    event.preventDefault()
+    blocks.value.splice(index, 1)
 
     await nextTick()
-
+    // 退格到上一行时，上一行也必须进入编辑态
+    activeBlockId.value = blocks.value[index - 1].id
     if (inputRefs.value[index - 1]) {
-      inputRefs.value[index - 1].focus() // 光标上移
+      inputRefs.value[index - 1].focus()
     }
   }
 }
 
 const triggerAI = async (index) => {
-  // 1. 把触发菜单的那个 "/" 删掉
   blocks.value[index].content = blocks.value[index].content.slice(0, -1)
-  
-  // 2. 拿到用户当前写的字，作为给 AI 的提示词
   const prompt = blocks.value[index].content
   
-  // 3. 在下方立刻新建一个空的文本块，用来装 AI 吐出来的字
   const aiBlockId = Date.now().toString()
   const aiBlock = { id: aiBlockId, type: 'p', content: '' }
   blocks.value.splice(index + 1, 0, aiBlock)
   
+  // 💡 注意：这里不把 aiBlockId 设为 activeBlockId。
+  // 这样 AI 在吐字时，页面上会直接渲染出加粗的 Markdown 效果，极度极客！
+
   try {
-    // 4. 呼叫你的 Java 后端 (注意端口是 8080)
     const response = await fetch('http://localhost:8080/api/ai/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt: prompt })
     })
 
-    // 5. 开启硬核的流式解析 (像接水管一样接住打字效果)
     const reader = response.body.getReader()
     const decoder = new TextDecoder('utf-8')
 
@@ -105,13 +126,9 @@ const triggerAI = async (index) => {
       const lines = chunk.split('\n')
       
       for (const line of lines) {
-        // 💡 修复 1：只要以 'data:' 开头统统拦截，不管有没有空格
         if (line.startsWith('data:')) {
-          // 💡 修复 2：安全截取掉前 5 个字符，然后用 trim() 洗掉多余的空格
           const dataStr = line.substring(5).trim()
-          
           if (dataStr === '[DONE]') continue
-          
           try {
             const data = JSON.parse(dataStr)
             const textContent = data.choices[0].delta.content || ''
@@ -119,20 +136,9 @@ const triggerAI = async (index) => {
             const targetBlock = blocks.value.find(b => b.id === aiBlockId)
             if (targetBlock) {
               targetBlock.content += textContent
-              
-              // 让高度自适应（直接利用 Vue 响应式更新后的 DOM 重新计算）
-              nextTick(() => {
-                // 注意：Vue 编译后 DOM 里没有 v-model，所以我们换成通用选择器
-                const textareas = document.querySelectorAll('.block-input')
-                textareas.forEach(el => {
-                  el.style.height = 'auto'
-                  el.style.height = el.scrollHeight + 'px'
-                })
-              })
+              // 因为是渲染态(div)，DOM 会根据文字多少自然撑开高度，不再需要我们手动计算高度了！
             }
-          } catch (e) {
-             // 忽略 JSON 解析报错
-          }
+          } catch (e) {}
         }
       }
     }
@@ -157,15 +163,10 @@ const menuOptions = [
 const selectedMenuIndex = ref(0)
 
 const handleInput = (index, event) => {
-  // === 新增：自动撑开高度的魔法 ===
   const textarea = event.target
-  // 先把高度重置为 auto，让它缩小回真实文字的高度
   textarea.style.height = 'auto'
-  // 然后把高度设置为它内部“卷去”的真实高度 (scrollHeight)
   textarea.style.height = textarea.scrollHeight + 'px'
-  // ====================================
 
-  // 下面是原有的菜单逻辑，保持不变
   const currentBlock = blocks.value[index]
   if (currentBlock.content.endsWith('/')) {
     const rect = textarea.getBoundingClientRect()
@@ -184,10 +185,8 @@ const handleInput = (index, event) => {
 const turnInto = (newType) => {
   if (activeBlockIndex.value !== null) {
     if (newType === 'ai') {
-      // 触发 AI 逻辑
       triggerAI(activeBlockIndex.value)
     } else {
-      // 原本的格式转换逻辑
       const block = blocks.value[activeBlockIndex.value]
       block.type = newType
       block.content = block.content.slice(0, -1) 
@@ -198,22 +197,15 @@ const turnInto = (newType) => {
 }
 
 const handleArrowKey = (direction, event) => {
-  // 如果菜单没出来，不管它，让浏览器正常移动光标
   if (!showMenu.value) return
-
-  // 如果菜单出来了，拦截默认行为（防止光标乱跑）
   event.preventDefault()
-
   if (direction === 'up') {
-    // 向上选，如果到顶了就循环到底部
     selectedMenuIndex.value = (selectedMenuIndex.value - 1 + menuOptions.length) % menuOptions.length
   } else if (direction === 'down') {
-    // 向下选，如果到底了就循环到顶部
     selectedMenuIndex.value = (selectedMenuIndex.value + 1) % menuOptions.length
   }
 }
 </script>
-
 
 <template>
   <div class="editor-container">
@@ -226,11 +218,30 @@ const handleArrowKey = (direction, event) => {
           <span class="drag-icon">⋮⋮</span>
         </div>
 
-        <textarea v-model="block.content" :class="['block-input', `block-${block.type}`]"
-          :placeholder="block.type === 'h1' ? '无标题' : '输入 \'/\' 唤出菜单...'" rows="1"
-          @keydown.enter.prevent="handleEnter(index)" @keydown.delete="handleBackspace(index, $event)"
-          @keydown.up="handleArrowKey('up', $event)" @keydown.down="handleArrowKey('down', $event)"
-          @input="handleInput(index, $event)" :ref="(el) => inputRefs[index] = el"></textarea>
+        <!-- 💡 状态 A：渲染态 -->
+        <div 
+          v-if="activeBlockId !== block.id"
+          class="markdown-body block-input" 
+          :class="[`block-${block.type}`]"
+          v-html="renderMarkdown(block.content, block.type)"
+          @click="focusBlock(block.id, index)"
+        ></div>
+
+        <!-- 💡 状态 B：编辑态 -->
+        <textarea 
+          v-else
+          v-model="block.content" 
+          :class="['block-input', `block-${block.type}`]"
+          :placeholder="block.type === 'h1' ? '无标题' : '输入 \'/\' 唤出菜单...'" 
+          rows="1"
+          @keydown.enter.prevent="handleEnter(index)" 
+          @keydown.delete="handleBackspace(index, $event)"
+          @keydown.up="handleArrowKey('up', $event)" 
+          @keydown.down="handleArrowKey('down', $event)"
+          @input="handleInput(index, $event)" 
+          @blur="activeBlockId = null" 
+          :ref="(el) => inputRefs[index] = el"
+        ></textarea>
       </div>
     </TransitionGroup>
 
@@ -242,17 +253,15 @@ const handleArrowKey = (direction, event) => {
         {{ item.label }}
       </div>
     </div>
+    
     <div class="status-bar" v-show="wordCount > 0">
       最后编辑于 {{ lastEditedTime }} • {{ wordCount }} 字
     </div>
   </div>
 </template>
 
-
 <style scoped>
-/* ==========================================
-   基础排版
-   ========================================== */
+/* 原有基础排版保持不变 */
 .editor-container {
   max-width: 700px;
   margin: 40px auto;
@@ -261,7 +270,6 @@ const handleArrowKey = (direction, event) => {
   color: #37352f;
 }
 
-/* 独立大标题样式 */
 .page-title {
   width: 100%;
   border: none;
@@ -278,9 +286,6 @@ const handleArrowKey = (direction, event) => {
   color: #e0e0e0;
 }
 
-/* ==========================================
-   积木块与动画
-   ========================================== */
 .blocks-wrapper {
   position: relative;
 }
@@ -293,9 +298,6 @@ const handleArrowKey = (direction, event) => {
   transition: all 0.2s ease;
 }
 
-/* ==========================================
-   左侧悬浮抓手
-   ========================================== */
 .block-handle {
   width: 24px;
   height: 28px;
@@ -315,9 +317,6 @@ const handleArrowKey = (direction, event) => {
   opacity: 1;
 }
 
-/* ==========================================
-   输入框细节
-   ========================================== */
 .block-input {
   flex: 1;
   border: none;
@@ -325,23 +324,43 @@ const handleArrowKey = (direction, event) => {
   background: transparent;
   padding: 4px 2px;
   width: 100%;
-  resize: none; /* 隐藏右下角的拖拽三角 */
-  overflow: hidden; /* 隐藏由于计算延迟可能闪现的滚动条 */
-  font-family: inherit; /* 强制继承我们设置的高级字体 */
+  resize: none; 
+  overflow: hidden; 
+  font-family: inherit; 
 }
 
-.block-input::placeholder {
+/* 💡 新增：统一 markdown-body 和 textarea 的基础体验 */
+.markdown-body {
+  cursor: text;
+  min-height: 28px; /* 保证空行也能被点击到 */
+}
+
+/* 💡 新增：清除 marked 解析出来的默认段落外边距，防止排版抖动 */
+.markdown-body :deep(p) {
+  margin: 0;
+  word-wrap: break-word;
+}
+.markdown-body :deep(strong) {
+  font-weight: 700;
+  color: #1a1a1a;
+}
+/* 占位符颜色 */
+.placeholder-text {
+  color: #e0e0e0;
+  pointer-events: none;
+}
+
+textarea.block-input::placeholder {
   color: #e0e0e0;
 }
 
-/* 聚焦时的左侧极细灰线 */
-.block-input:focus {
+textarea.block-input:focus {
   border-left: 2px solid #ebeced;
   padding-left: 10px;
   margin-left: -12px;
 }
 
-.block-input::selection {
+textarea.block-input::selection {
   background: rgba(46, 170, 220, 0.3);
 }
 
@@ -364,29 +383,20 @@ const handleArrowKey = (direction, event) => {
   line-height: 1.6;
 }
 
-/* ==========================================
-   Vue 过渡动画魔法
-   ========================================== */
 .list-enter-active,
 .list-leave-active {
   transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
 }
-
 .list-enter-from,
 .list-leave-to {
   opacity: 0;
   transform: translateY(15px);
 }
-
 .list-leave-active {
   position: absolute;
   width: calc(100% - 28px);
-  /* 保持离开时的宽度，防止布局跳动 */
 }
 
-/* ==========================================
-   悬浮命令菜单
-   ========================================== */
 .command-menu {
   position: absolute;
   background: white;
@@ -415,24 +425,17 @@ const handleArrowKey = (direction, event) => {
   transition: background 0.1s;
 }
 
-.menu-item:hover {
-  background-color: #f1f1ef;
-}
-
-.menu-item.is-selected {
+.menu-item:hover, .menu-item.is-selected {
   background-color: #f1f1ef;
 }
 
 .status-bar {
   position: fixed;
-  /* 固定在浏览器视口 */
   bottom: 24px;
   right: 32px;
   font-size: 13px;
   color: #b3b3b1;
-  /* 极其柔和的浅灰色 */
   pointer-events: none;
-  /* 鼠标穿透，防止挡住底部的字点不到 */
   transition: opacity 0.3s ease;
 }
 </style>
